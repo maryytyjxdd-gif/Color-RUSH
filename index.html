@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Color Rush</title>
+
+<style>
+
+body{
+    margin:0;
+    overflow:hidden;
+    background:#05050f;
+    font-family:Arial,sans-serif;
+}
+
+canvas{
+    display:block;
+}
+
+/* MENU */
+
+#menu{
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center;
+    color:white;
+    z-index:20;
+}
+
+#menu h1{
+    font-size:72px;
+    margin-bottom:30px;
+    background:linear-gradient(
+        90deg,
+        #ff6bff,
+        #4d9fff,
+        #00ffaa
+    );
+    -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent;
+}
+
+button{
+    padding:16px 30px;
+    border:none;
+    border-radius:50px;
+    font-size:16px;
+    background:white;
+    color:black;
+    font-weight:bold;
+}
+
+/* UI */
+
+#ui{
+    position:absolute;
+    top:10px;
+    left:10px;
+    right:10px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    z-index:10;
+    color:white;
+    font-weight:bold;
+}
+
+.score-box{
+    background:rgba(255,255,255,0.08);
+    padding:12px 16px;
+    border-radius:18px;
+    backdrop-filter:blur(6px);
+}
+
+/* PAUSE */
+
+#pauseScreen{
+    display:none;
+    position:absolute;
+    width:100%;
+    height:100%;
+    background:rgba(0,0,0,0.95);
+    color:white;
+    z-index:30;
+    align-items:center;
+    justify-content:center;
+    flex-direction:column;
+}
+
+#pauseScreen h2{
+    font-size:50px;
+}
+
+</style>
+</head>
+
+<body>
+
+<div id="menu">
+    <h1>COLOR RUSH</h1>
+    <button onclick="startEndless()">⚡ INFINITA</button>
+</div>
+
+<div id="ui">
+    <div class="score-box" id="score">0</div>
+    <div class="score-box" id="highscore">Record: 0</div>
+    <div class="score-box" id="level">Lv 1</div>
+    <div class="score-box" id="combo">Combo 0x</div>
+    <button onclick="togglePause()">⏸</button>
+</div>
+
+<div id="pauseScreen">
+    <h2>PAUSA</h2>
+    <button onclick="resumeGame()">▶ RIPRENDI</button>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+/* ROUNDRECT FIX */
+if(!ctx.roundRect){
+CanvasRenderingContext2D.prototype.roundRect =
+function(x,y,w,h,r){
+this.beginPath();
+this.moveTo(x+r,y);
+this.arcTo(x+w,y,x+w,y+h,r);
+this.arcTo(x+w,y+h,x,y+h,r);
+this.arcTo(x,y+h,x,y,r);
+this.arcTo(x,y,x+w,y,r);
+this.closePath();
+}
+}
+
+/* VARIABLES */
+let score = 0;
+let highScore = localStorage.getItem("crhs") || 0;
+
+let combo = 0;
+let comboTimer = 0;
+
+let level = 1;
+let nextLevel = 25;
+
+let running = false;
+let paused = false;
+let gameOver = false;
+
+let gameSpeed = 8.5;
+let flash = 0;
+
+const player = {
+x:0,
+y:0,
+r:16,
+trail:[]
+};
+
+let targetX = 0;
+let gates = [];
+let particles = [];
+
+/* AUDIO */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function unlockAudio(){
+if(audioCtx.state === "suspended") audioCtx.resume();
+}
+document.addEventListener("touchstart", unlockAudio, {once:true});
+document.addEventListener("mousedown", unlockAudio, {once:true});
+document.addEventListener("keydown", unlockAudio, {once:true});
+
+function playCollectSound(){
+const osc = audioCtx.createOscillator();
+const gain = audioCtx.createGain();
+
+osc.type = "sine";
+osc.frequency.value = 500 + combo * 15;
+
+osc.connect(gain);
+gain.connect(audioCtx.destination);
+
+gain.gain.value = 0.2;
+
+osc.start();
+
+gain.gain.linearRampToValueAtTime(
+0,
+audioCtx.currentTime + 0.15
+);
+
+osc.stop(audioCtx.currentTime + 0.16);
+}
+
+/* RESIZE */
+function resize(){
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+player.x = canvas.width / 2;
+player.y = canvas.height - 70;
+targetX = player.x;
+}
+resize();
+window.addEventListener("resize", resize);
+
+/* INPUT */
+function setX(x){
+const rect = canvas.getBoundingClientRect();
+targetX = x - rect.left;
+}
+
+canvas.addEventListener("touchstart", e => setX(e.touches[0].clientX));
+canvas.addEventListener("touchmove", e => setX(e.touches[0].clientX));
+canvas.addEventListener("mousemove", e => {
+if(running) setX(e.clientX);
+});
+
+/* START */
+function startEndless(){
+resetGame();
+}
+
+function resetGame(){
+score = 0;
+combo = 0;
+comboTimer = 0;
+level = 1;
+nextLevel = 25;
+gameSpeed = 8.5;
+flash = 0;
+gates = [];
+particles = [];
+
+running = true;
+paused = false;
+gameOver = false;
+
+document.getElementById("menu").style.display = "none";
+document.getElementById("ui").style.display = "flex";
+}
+
+/* SPAWN */
+function spawnGate(){
+const bonus = Math.random() < 0.1;
+
+gates.push({
+x: Math.random() * (canvas.width - 120) + 60,
+y: -120,
+w: bonus ? 60 : 48,
+h: 42,
+value: bonus ? "+3" : "+1",
+color: bonus ? "#ffd700" : "#00ffcc",
+bonus
+});
+}
+
+setInterval(()=>{
+if(running && !paused && !gameOver){
+spawnGate();
+}
+},520);
+
+/* PARTICLES */
+function createParticles(x,y,color,count=10){
+for(let i=0;i<count;i++){
+particles.push({
+x,y,
+vx:Math.random()*6-3,
+vy:Math.random()*6-3,
+life:25,
+color,
+size:Math.random()*3+1
+});
+}
+}
+
+/* PAUSE */
+function togglePause(){
+if(!running) return;
+paused = true;
+document.getElementById("pauseScreen").style.display = "flex";
+}
+
+function resumeGame(){
+paused = false;
+document.getElementById("pauseScreen").style.display = "none";
+}
+
+/* END */
+function endGame(){
+running = false;
+gameOver = true;
+
+if(score > highScore){
+highScore = Math.floor(score);
+localStorage.setItem("crhs", highScore);
+}
+
+document.getElementById("menu").style.display = "block";
+document.getElementById("ui").style.display = "none";
+
+document.getElementById("menu").innerHTML = `
+<h1>GAME OVER</h1>
+<p style="color:white">Score: ${Math.floor(score)}</p>
+<p style="color:white">Record: ${highScore}</p>
+<button onclick="startEndless()">Riprova</button>
+`;
+}
+
+/* UPDATE */
+function update(){
+
+if(!running || paused || gameOver) return;
+
+player.x += (targetX - player.x) * 0.16;
+
+player.trail.push({x:player.x,y:player.y});
+if(player.trail.length > 12) player.trail.shift();
+
+gameSpeed = 8.5 + Math.min(score * 0.03, 5);
+
+/* ✅ FIX BUG COMBO */
+if(comboTimer > 0){
+comboTimer--;
+if(comboTimer === 0){
+combo = 0;
+}
+}
+
+if(score >= nextLevel){
+level++;
+nextLevel += 25 + level * 10;
+flash = 6;
+}
+
+for(let i=gates.length-1;i>=0;i--){
+
+const g = gates[i];
+g.y += gameSpeed;
+
+if(
+player.x > g.x &&
+player.x < g.x + g.w &&
+player.y > g.y &&
+player.y < g.y + g.h
+){
+playCollectSound();
+
+score += g.bonus ? 3 : 1;
+combo++;
+comboTimer = 90;
+flash = 5;
+
+createParticles(
+g.x + g.w/2,
+g.y + g.h/2,
+g.color,
+g.bonus ? 14 : 8
+);
+
+gates.splice(i,1);
+}
+else if(g.y > canvas.height + 100){
+if(!g.bonus) endGame();
+else gates.splice(i,1);
+}
+}
+
+updateUI();
+}
+
+/* DRAW */
+function draw(){
+
+const gradient = ctx.createLinearGradient(0,0,0,canvas.height);
+gradient.addColorStop(0,"#050510");
+gradient.addColorStop(1,"#0d1438");
+
+ctx.fillStyle = gradient;
+ctx.fillRect(0,0,canvas.width,canvas.height);
+
+if(flash>0){
+ctx.fillStyle="rgba(255,255,255,0.08)";
+ctx.fillRect(0,0,canvas.width,canvas.height);
+flash--;
+}
+
+ctx.fillStyle="white";
+for(let i=0;i<70;i++){
+const x=(i*37)%canvas.width;
+const y=(i*29+Date.now()/45)%canvas.height;
+ctx.fillRect(x,y,2,2);
+}
+
+player.trail.forEach((p,i)=>{
+ctx.globalAlpha=i/player.trail.length;
+ctx.beginPath();
+ctx.arc(p.x,p.y,player.r*(0.4+i/30),0,Math.PI*2);
+ctx.fillStyle="#77eeff";
+ctx.fill();
+});
+
+ctx.globalAlpha=1;
+
+ctx.beginPath();
+ctx.arc(player.x,player.y,player.r,0,Math.PI*2);
+ctx.fillStyle="white";
+ctx.fill();
+
+gates.forEach(g=>{
+ctx.fillStyle=g.color;
+ctx.roundRect(g.x,g.y,g.w,g.h,10);
+ctx.fill();
+
+ctx.fillStyle="white";
+ctx.font="bold 22px Arial";
+ctx.textAlign="center";
+ctx.fillText(g.value,g.x+g.w/2,g.y+28);
+});
+
+particles.forEach((p,i)=>{
+p.x+=p.vx;
+p.y+=p.vy;
+p.life--;
+
+ctx.globalAlpha=p.life/25;
+ctx.fillStyle=p.color;
+ctx.beginPath();
+ctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+ctx.fill();
+
+if(p.life<=0) particles.splice(i,1);
+});
+
+ctx.globalAlpha=1;
+}
+
+/* UI */
+function updateUI(){
+document.getElementById("score").innerText=Math.floor(score);
+document.getElementById("highscore").innerText="Record: "+highScore;
+document.getElementById("combo").innerText="Combo "+combo+"x";
+document.getElementById("level").innerText="Lv "+level;
+}
+
+/* LOOP */
+function loop(){
+update();
+draw();
+requestAnimationFrame(loop);
+}
+loop();
+
+</script>
+
+</body>
+</html>
